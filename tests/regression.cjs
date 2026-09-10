@@ -1,28 +1,33 @@
-// Run with Node 22+: node tests/regression.cjs
-// Uses the shipped HTML and actual Three/Cannon mathematics. WebGL is stubbed;
-// this validates physics, projection and UI flow, not GPU rendering or device FPS.
+// Node 22+. Runs the shipped physics and UI; DOM is stubbed, not browser visual QA.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const html=fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
 const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
-assert.equal(scripts.length,3);assert(!/<(?:script|img|link)\b[^>]*(?:src|href)=/i.test(html),'Offline file has no external assets');
-vm.runInThisContext(scripts[0]);vm.runInThisContext(scripts[1]);
-const split=scripts[2].indexOf("(()=>{'use strict';");assert(split>0);
-vm.runInThisContext(scripts[2].slice(0,split)+'\nglobalThis.RP=RacePhysics');
-// Regress the old bug: crossing z=finish outside the track must never win.
-const t=RP.build(),m=RP.createRace(t,8,12345);const outside=m[0];outside.body.position.set(RP.center(355)+30,RP.height(355),355);RP.update(m,RP.STEP);assert.equal(outside.finished,null);assert(outside.dnf);
-// Every sloping curb follows its actual segment grade, closing underside gaps.
-for(let i=0;i<t.samples.length-1;i++){const a=t.samples[i].l,b=t.samples[i+1].l,w=t.walls[i*2],axis=w.q.vmult(new CANNON.Vec3(0,0,1));const d=new CANNON.Vec3(b.x-a.x,b.y-a.y,b.z-a.z);d.normalize();assert(axis.dot(d)>.99999);}
-assert.equal(t.dynamic.length,5);const positions=t.dynamic.map(d=>d.body.position.clone()),quats=t.dynamic.map(d=>d.body.quaternion.clone());RP.drive(t,0);t.world.step(RP.STEP);assert(t.dynamic.some((d,i)=>d.body.position.distanceTo(positions[i])>0));assert(t.dynamic.some((d,i)=>Math.abs(d.body.quaternion.w-quats[i].w)>1e-6));
-const ctx2d={fillRect(){},fillText(){}};
-class El{constructor(){this.style={setProperty(){}};this.children=[];this.value='';this.classList={toggle(){},add(){},remove(){}};}set innerHTML(v){this.html=v;if(v.includes('class="rank"'))this.children=[new El(),new El(),new El(),new El()]}get innerHTML(){return this.html}appendChild(e){this.children.push(e)}setAttribute(){}addEventListener(){}focus(){}getContext(){return ctx2d}}
-const elements={};global.document={hidden:false,getElementById(id){return elements[id]??(elements[id]=new El())},createElement(){return new El()},addEventListener(){}};
-global.window=global;global.devicePixelRatio=2;global.innerWidth=390;global.innerHeight=844;global.addEventListener=()=>{};
-Object.defineProperty(global,'crypto',{value:{getRandomValues(a){a[0]=849302;return a}},configurable:true});
-let callback,projectionFrames=0;global.requestAnimationFrame=fn=>{callback=fn};
-THREE.WebGLRenderer=class{constructor(){this.shadowMap={};this.info={render:{calls:0,triangles:0}}}setPixelRatio(){}setSize(){}render(scene,camera){const d=global.marbleDiagnostics;if(d?.state==='race'&&d.simTime>1){camera.updateMatrixWorld();const focus=new THREE.Vector3(...d.camera.focus);assert(camera.position.y-focus.y>12,'Camera stays above the leader');focus.project(camera);assert(Math.abs(focus.x)<.9&&Math.abs(focus.y)<.9,'Leader stays in frame: '+JSON.stringify({time:d.simTime,projection:focus.toArray(),camera:d.camera}));projectionFrames++;}}};
-document.getElementById('count').value='8';document.getElementById('quality').value='auto';
-vm.runInThisContext(scripts[2].slice(split));let now=0;function advance(n){for(let i=0;i<n;i++){now+=1000/60;callback(now)}}
-assert.equal(marbleDiagnostics.state,'menu');document.getElementById('start').onclick();advance(260);assert.equal(marbleDiagnostics.state,'race');document.getElementById('pause').onclick();const time=marbleDiagnostics.simTime;advance(60);assert.equal(marbleDiagnostics.simTime,time);document.getElementById('pause').onclick();
-for(let i=0;i<9000&&marbleDiagnostics.state!=='results';i++)advance(1);assert.equal(marbleDiagnostics.state,'results');const result=marbleDiagnostics;assert(result.results.some(m=>m.finished!==null));assert(result.results[0].finished<50,'Faster race than original 55s baseline');assert(projectionFrames>1000);console.log(JSON.stringify({winner:result.results[0].name,time:result.results[0].finished,finished:result.results.filter(m=>m.finished!==null).length,projectionFrames,dynamicObstacles:result.dynamicObstacles}));
-const bodies=result.bodies;document.getElementById('again').onclick();assert.equal(marbleDiagnostics.state,'countdown');assert.equal(marbleDiagnostics.bodies,bodies);advance(240);document.getElementById('exit').onclick();assert.equal(marbleDiagnostics.state,'menu');assert.equal(marbleDiagnostics.bodies,bodies);
-console.log('PASS: inline syntax/runtime, finish boundary, graded curbs, motor motion, full race, mobile camera framing, pause/resume, results, replay and stable body count. GPU/browser not tested.');
+assert.equal(scripts.length,2);
+assert(!/<(?:script|img|link)\b[^>]*(?:src|href)=/i.test(html),'Single file must remain offline');
+vm.runInThisContext(scripts[0]+'\nglobalThis.P=MatchPhysics;');
+const {R,BALL,STEP}=P;
+// A ball must never score through the closed side, even if already slightly outside.
+const closed=P.create(1);closed.balls[0].x=-R-2;closed.balls[0].y=0;closed.balls[0].vx=-P.SPEED;closed.balls[0].vy=0;P.tick(closed);assert.equal(closed.score[0],0);assert(Math.hypot(closed.balls[0].x,closed.balls[0].y)<=R-BALL+.01);assert(closed.balls[0].vx>0);
+// A centered shot through the mouth scores exactly once, then respawns inside.
+const shot=P.create(7);shot.angle=0;Object.assign(shot.balls[0],{x:R-15,y:0,vx:P.SPEED,vy:0});for(let i=0;i<45;i++)P.tick(shot);assert.equal(shot.score[0],1);assert.equal(shot.events.length,1);for(let i=0;i<120;i++)P.tick(shot);assert.equal(shot.score[0],1);assert(shot.balls[0].cooldown<=0);assert(Math.hypot(shot.balls[0].x,shot.balls[0].y)<R);
+// A shot clipping a post is blocked (ball radius must fit through the opening).
+const post=P.create(8);post.angle=0;const a=P.HALF-.025;Object.assign(post.balls[0],{x:(R-BALL-1)*Math.cos(a),y:(R-BALL-1)*Math.sin(a),vx:P.SPEED*Math.cos(a),vy:P.SPEED*Math.sin(a)});for(let i=0;i<25;i++)P.tick(post);assert.equal(post.score[0],0);
+// Equal-mass ball collision separates centers and reverses a head-on approach.
+const hit=P.create(12);Object.assign(hit.balls[0],{x:-12,y:0,vx:P.SPEED,vy:0});Object.assign(hit.balls[1],{x:12,y:0,vx:-P.SPEED,vy:0});P.tick(hit);assert(hit.balls[0].vx<0&&hit.balls[1].vx>0);assert(hit.balls[1].x-hit.balls[0].x>=BALL*2);
+function run(seed){const m=P.create(seed);for(let i=0;i<11000&&!m.finished;i++){P.tick(m);for(const b of m.balls){assert(Number.isFinite(b.x+b.y+b.vx+b.vy));assert(Math.hypot(b.x,b.y)<R+BALL+3,'Ball escaped without being scored');}}assert(m.finished);assert.equal(m.time,90);assert.equal(m.score[0]+m.score[1],m.events.length);const score=m.score.slice();P.tick(m);assert.deepEqual(m.score,score);return m;}
+const scores=[];for(let seed=1;seed<=60;seed++)scores.push(run(seed).score);assert.deepEqual(run(77).events,run(77).events,'Same seed must replay identically');assert(new Set(scores.map(s=>s.join(':'))).size>5,'Different seeds should vary');console.log('60 full matches:',JSON.stringify({averageGoals:scores.reduce((n,s)=>n+s[0]+s[1],0)/scores.length,firstTen:scores.slice(0,10)}));
+// Exercise actual UI event handlers and requestAnimationFrame timing.
+class El{constructor(id=''){this.id=id;this.style={setProperty(){}};this.dataset={};this.attrs={};this.children=[];this.handlers={};this.hidden=false;this.value='';this.tagName='DIV';this.classList={add(){},remove(){}};}setAttribute(k,v){this.attrs[k]=String(v)}append(...c){this.children.push(...c)}replaceChildren(...c){this.children=[...c]}addEventListener(k,fn){this.handlers[k]=fn}focus(){document.activeElement=this}setCustomValidity(v){this.invalid=v}reportValidity(){return !Object.values(els).some(e=>e.invalid)}fire(k){this.handlers[k]?.({preventDefault(){}})}}
+const els={};for(const m of html.matchAll(/id="([^"]+)"/g))els[m[1]]=new El(m[1]);
+const themeEls=['super','champions','europa'].map(t=>{const e=new El();e.dataset.theme=t;return e});
+const docHandlers={};global.document={hidden:false,body:new El(),documentElement:new El(),activeElement:null,getElementById(id){assert(els[id],`Missing element ${id}`);return els[id]},createElement:()=>new El(),createElementNS:()=>new El(),querySelectorAll:()=>themeEls,addEventListener:(k,fn)=>docHandlers[k]=fn};global.window=global;global.matchMedia=()=>({matches:false});let callback;global.requestAnimationFrame=fn=>callback=fn;let seed=800;Object.defineProperty(global,'crypto',{value:{getRandomValues(a){a[0]=seed++;return a}},configurable:true});
+Object.assign(els.home,{value:'Galatasaray',tagName:'INPUT'});els.away.value='Fenerbahçe';els['home-color'].value='#dd5c63';els['away-color'].value='#e7e9e3';els['predict-home'].value='1';els['predict-away'].value='1';
+vm.runInThisContext(scripts[1]);let now=0;function advance(n,hz=60){for(let i=0;i<n;i++){now+=1000/hz;callback(now)}}
+assert.equal(marbleDiagnostics.state,'menu');for(const [i,key]of ['super','champions','europa'].entries()){themeEls[i].fire('click');assert.equal(document.body.dataset.theme,key);assert.equal(themeEls[i].attrs['aria-pressed'],'true');}
+els.home.value='   ';els.setup.fire('submit');assert.equal(marbleDiagnostics.state,'menu');els.home.value='Galatasaray';els.home.fire('input');els.setup.fire('submit');assert.equal(marbleDiagnostics.state,'playing');assert.equal(els['home-name'].textContent,'Galatasaray');assert.equal(els['league-name'].textContent,'UEFA Avrupa Ligi');advance(180);els.pause.fire('click');const paused=marbleDiagnostics.time;advance(80);assert.equal(marbleDiagnostics.time,paused);els.pause.fire('click');advance(80);assert(marbleDiagnostics.time>paused);
+document.hidden=true;docHandlers.visibilitychange();assert.equal(marbleDiagnostics.state,'paused');document.hidden=false;els.pause.fire('click');for(let i=0;i<5600&&marbleDiagnostics.state!=='finished';i++)advance(1);assert.equal(marbleDiagnostics.state,'finished');assert.equal(els.clock.textContent,'90:00');assert.equal(els.result.hidden,false);assert.equal(els.events.children.length,marbleDiagnostics.events.length);assert.equal(els['result-title'],document.activeElement);
+els.again.fire('click');assert.equal(marbleDiagnostics.state,'playing');assert.equal(marbleDiagnostics.time,0);assert.deepEqual(marbleDiagnostics.score,[0,0]);assert.equal(els.events.children.length,0);assert.equal(els['home-name'].textContent,'Galatasaray');advance(60);els.exit.fire('click');assert.equal(marbleDiagnostics.state,'menu');assert.equal(els.menu.hidden,false);assert.equal(els.home.value,'Galatasaray');
+// Rendering frame rate must not change simulated results for the same seed.
+function uiAtRate(hz){seed=900;els.setup.fire('submit');for(let i=0;i<hz*92&&marbleDiagnostics.state!=='finished';i++)advance(1,hz);assert.equal(marbleDiagnostics.state,'finished');return marbleDiagnostics.events;}
+assert.deepEqual(uiAtRate(30),uiAtRate(144));
+console.log('PASS: offline syntax, closed boundary, goals/respawn, goalposts, collisions, 60 matches, deterministic seeds, themes, input validation, UI scoring, pause/resume, background pause, results, replay and 30/144 Hz agreement. Browser/GPU visual QA not performed.');
