@@ -1,59 +1,51 @@
-// Node 22+. Actual shipped physics, renderer and UI; browser/codec APIs are stubbed.
-const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
-const html=fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
-const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
-assert.equal(scripts.length,3);assert(!/<(?:script|img|link)\b[^>]*(?:src|href)=/i.test(html),'Offline assets');
-vm.runInThisContext(scripts[0]+'\nglobalThis.P=MatchPhysics;');
-vm.runInThisContext(scripts[1]+'\nglobalThis.V=MatchVideo;');
-const {R,BALL,STEP}=P;assert.equal(P.DURATION,60);assert(P.SPEED>=240);assert(P.pace(59)>P.pace(30));
-const closed=P.create(1);Object.assign(closed.balls[0],{x:-R-2,y:0,vx:-P.SPEED,vy:0});P.tick(closed);assert.equal(closed.score[0],0);assert(Math.hypot(closed.balls[0].x,closed.balls[0].y)<=R-BALL+.01);assert(closed.balls[0].vx>0);
-const shot=P.create(7);shot.angle=0;Object.assign(shot.balls[0],{x:R-15,y:0,vx:P.SPEED,vy:0});for(let i=0;i<30;i++)P.tick(shot);assert.equal(shot.score[0],1);assert.equal(shot.events.length,1);for(let i=0;i<85;i++)P.tick(shot);assert.equal(shot.score[0],1);assert(shot.balls[0].cooldown<=0);
-const post=P.create(8);post.angle=0;const a=P.HALF-.025;Object.assign(post.balls[0],{x:(R-BALL-1)*Math.cos(a),y:(R-BALL-1)*Math.sin(a),vx:P.SPEED*Math.cos(a),vy:P.SPEED*Math.sin(a)});for(let i=0;i<20;i++)P.tick(post);assert.equal(post.score[0],0);
-const hit=P.create(12);Object.assign(hit.balls[0],{x:-12,y:0,vx:P.SPEED,vy:0});Object.assign(hit.balls[1],{x:12,y:0,vx:-P.SPEED,vy:0});P.tick(hit);assert(hit.balls[0].vx<0&&hit.balls[1].vx>0);
-function run(seed){const m=P.create(seed);for(let i=0;i<7200;i++){P.tick(m);for(const b of m.balls){assert(Number.isFinite(b.x+b.y+b.vx+b.vy));assert(m.impacts.length<=24);assert(Math.hypot(b.vx,b.vy)<500);assert(Math.hypot(b.x,b.y)<R+BALL+4);}}assert(m.finished);assert.equal(m.time,60);assert.equal(m.score[0]+m.score[1],m.events.length);for(const e of m.events)assert.equal(e.minute,Math.min(90,Math.max(1,Math.ceil(e.time/60*90))));const events=JSON.stringify(m.events);P.tick(m);assert.equal(JSON.stringify(m.events),events);return m;}
-const scores=[];for(let seed=1;seed<=80;seed++)scores.push(run(seed).score);assert.deepEqual(run(77).events,run(77).events);assert(run(77).chances.some(n=>n>0));assert(run(77).impacts.length>0);assert(new Set(scores.map(s=>s.join(':'))).size>6);console.log('80 matches:',JSON.stringify({averageGoals:scores.reduce((n,s)=>n+s[0]+s[1],0)/scores.length}));
-// Canvas calls are counted so caching/per-frame behavior is observable without visual QA.
-let cachedGradients=0,draws=0;const context={fillRect(){},strokeRect(){},clearRect(){},save(){},restore(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},fill(){},arc(){},roundRect(){},translate(){},scale(){},rotate(){},fillText(){},drawImage(){draws++},measureText(s){return {width:s.length*12}},createRadialGradient(){cachedGradients++;return {addColorStop(){}}}};
-class El{
- constructor(id=''){this.id=id;this.attrs={};this.value='';this.style={setProperty(){}};this.dataset={};this.handlers={};this.children=[];this.hidden=false;this.disabled=false;this.checked=false;this.tagName='DIV';this.classes=new Set();this.classList={add:(...xs)=>xs.forEach(x=>this.classes.add(x)),remove:(...xs)=>xs.forEach(x=>this.classes.delete(x)),toggle:x=>{if(this.classes.has(x)){this.classes.delete(x);return false;}this.classes.add(x);return true;}};}
- setAttribute(k,v){this.attrs[k]=String(v)}removeAttribute(k){delete this.attrs[k]}
- addEventListener(k,f){this.handlers[k]=f}fire(k){if(!this.disabled)this.handlers[k]?.({preventDefault(){}})}focus(){document.activeElement=this}setCustomValidity(v){this.invalid=v}
- reportValidity(){return !Object.values(els).some(e=>e.invalid)}getContext(){return context}load(){}showModal(){this.open=true}close(){this.open=false}
+// Actual rules + DOM-stub application flow. Run: node tests/regression.cjs
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+const D=require('../js/data.js'),E=require('../js/engine.js');
+assert.equal(D.buildings.length,30);assert.equal(D.projects.length,12);assert.equal(D.events.length,8);assert.equal(D.buildings.filter(d=>d.tier===0).length,12);assert.equal(new Set(D.all.map(d=>d.id)).size,42);
+const b=id=>({id,level:1,mods:[]});
+function base(map='plain'){return E.newGame({map,seed:231,tier:2});}
+function fixture(...placements){const s=base('river');s.coins=100;for(const [i,id]of placements)s.board[i]=b(id);return s;}
+function apply(s,id,targets){s.offers=[id];return E.play(s,id,targets);}
+// Preview is pure and has identical economics to the commit; undo restores RNG and offers too.
+let s=base();const original=JSON.stringify(s);const p=E.preview(s,'house',[8]);assert(p.ok);assert.equal(JSON.stringify(s),original);s.offers=['house'];const before=E.clone(s),played=E.play(s,'house',[8]);assert.deepEqual(E.evaluate(played),p.stats);assert.equal(played.coins,25);assert.deepEqual(E.undo(played),before);assert.throws(()=>E.advance(before));assert.throws(()=>E.play(played,'house',[9]));
+// Costs, immutable city hall, terrain and waterfront restrictions.
+assert(!E.preview(s,'house',[7]).ok);s.coins=0;assert(!E.preview(s,'house',[8]).ok);assert(!E.preview(base(),'promenade',[8]).ok);assert(E.preview(base('river'),'promenade',[4]).ok);assert(!E.preview(base('river'),'house',[5]).ok);assert(!E.preview(base(),'demolish',[7]).ok);
+assert.deepEqual(E.neighbors(0),[6,1]);assert.equal(E.neighbors(8).length,4);
+// Every building has an executable evaluator and valid placement somewhere.
+for(const d of D.buildings){const s=fixture(),i=d.id==='promenade'?4:8;s.board[i]=b(d.id);const st=E.evaluate(s);assert(Number.isFinite(st.income+st.pop+st.happy+st.power));assert(E.preview(fixture(),d.id,[i]).ok,d.id);}
+const alone=E.evaluate(fixture([8,'house'])),park=E.evaluate(fixture([8,'house'],[9,'park']));assert.equal(park.pop-alone.pop,2);assert(park.happy>alone.happy);
+const dirty=fixture([8,'house'],[9,'factory']);const clean=E.preview(dirty,'filter',[9]);assert(clean.ok);assert.equal(clean.delta.happy,2);
+const transit=fixture([8,'tram'],[20,'tram']);assert.equal(E.links(transit,8).length,1);assert(E.evaluate(transit).income>=10);
+const tall=fixture([8,'solar'],[9,'apartment']);assert.equal(E.evaluate(tall).power,5); // hall4 + solar4 - apartment3
+// All twelve projects, including two-cell actions, consume a turn and are undoable.
+const projectFixtures={upgrade:[fixture([8,'house']),[8]],move:[fixture([8,'house']),[8,9]],demolish:[fixture([8,'house']),[8]],rezone:[fixture([8,'house']),[8]],insulate:[fixture([8,'apartment']),[8]],roof:[fixture([8,'house']),[8]],filter:[fixture([8,'factory']),[8]],festival:[fixture([8,'house'],[9,'park']),[8]],transport:[fixture([8,'tram'],[20,'tram']),[8]],restore:[fixture([8,'museum']),[8]],swap:[fixture([8,'house'],[9,'park']),[8,9]],subsidy:[fixture(),[]]};
+for(const d of D.projects){const [s,targets]=projectFixtures[d.id];s.offers=[d.id];const p=E.preview(s,d.id,targets);assert(p.ok,d.id);const next=E.play(s,d.id,targets);assert.deepEqual(E.undo(next),s);assert.equal(E.advance(next).turn,2);}
+let upgraded=fixture([8,'house']);upgraded.board[8].level=3;assert(!E.preview(upgraded,'upgrade',[8]).ok);
+let subsidized=E.preview(fixture(),'subsidy',[]).state;assert.equal(E.cost(subsidized,'house'),0);assert(!E.preview(subsidized,'subsidy',[]).ok);assert.equal(E.preview(subsidized,'house',[8]).state.discount,0);
+let roofed=E.preview(fixture([8,'house']),'roof',[8]).state;assert(!E.preview(roofed,'roof',[8]).ok);
+const coast=fixture([4,'promenade']);assert(!E.preview(coast,'move',[4,8]).ok);
+// Deterministic draw, progression and reserve behavior.
+assert.deepEqual(base(),base());s=base();const card=s.offers[0];s=E.reserve(s,card);assert.equal(s.reserve,card);assert(!s.offers.includes(card));assert.equal(s.turn,1);assert.throws(()=>E.reserve(s,s.offers[0]));s=E.reroll(s);s=E.reroll(s);assert.throws(()=>E.reroll(s));if(E.canUse(s,card)){const next=E.play(s,card,E.placements(s,card)[0],'reserve');assert.equal(next.reserve,null);}
+for(let seed=0;seed<12;seed++){const novice=E.newGame({seed,tier:0});assert(novice.offers.every(id=>D.byId[id].tier===0));}
+// Event mechanics are real and temporary, with a five-turn settlement cadence.
+for(const event of D.events){const s=fixture([8,'factory'],[9,'house'],[10,'hotel'],[14,'park']);s.activeEvent=event.id;assert(Number.isFinite(E.evaluate(s).income));assert.deepEqual(E.evaluate(s,true),E.evaluate({...s,activeEvent:null}));}
+const production=fixture([8,'factory']);assert(E.evaluate({...production,activeEvent:'orders'}).income>E.evaluate(production).income);assert(E.evaluate({...production,activeEvent:'fire'}).income<E.evaluate(production).income);
+let turn=base();const initialForecast=turn.forecast;for(let i=0;i<4;i++)turn=E.advance(E.pass(turn));assert.equal(turn.activeEvent,null);const money=turn.coins;turn=E.advance(E.pass(turn));assert.equal(turn.activeEvent,initialForecast);assert(turn.coins>=money+5);assert.notEqual(turn.forecast,initialForecast);
+// A complete game on each map: every dealt hand has a legal affordable action.
+const totals=[];for(const map of D.maps)for(let seed=1;seed<=15;seed++){
+ let s=E.newGame({map:map.id,seed,tier:seed%3});for(let t=1;t<=30;t++){assert.equal(s.turn,t);assert(E.validSave(s));assert.equal(new Set(s.offers).size,s.offers.length);const playable=s.offers.filter(id=>E.canUse(s,id));assert(playable.length,`Softlock ${map.id} ${seed} ${t}`);
+ const id=playable.find(id=>D.byId[id].kind==='building')||playable[0],positions=E.placements(s,id),targets=positions[Math.floor(seed%positions.length)];s=E.play(s,id,targets);assert(E.validSave(s),'pending save');s=E.advance(s);}
+ assert(s.finished);assert.equal(s.turn,30);assert.throws(()=>E.pass(s));assert(Number.isFinite(E.score(s).total));totals.push(E.score(s).total);
 }
-const els={};for(const m of html.matchAll(/id="([^"]+)"/g))els[m[1]]=new El(m[1]);
-const themes=['super','champions','europa'].map(t=>{const e=new El();e.dataset.theme=t;return e;});const handlers={};
-global.document={body:new El(),documentElement:new El(),hidden:false,activeElement:null,getElementById(id){assert(els[id],'Missing '+id);return els[id]},createElement:()=>new El(),querySelectorAll:()=>themes,addEventListener:(k,f)=>handlers[k]=f};global.window=global;global.addEventListener=(k,f)=>handlers[k]=f;global.matchMedia=()=>({matches:false});global.localStorage={getItem(){return null},setItem(){}};Object.defineProperty(global,'navigator',{value:{},configurable:true});
-let callback;global.requestAnimationFrame=f=>callback=f;let nextSeed=800;Object.defineProperty(global,'crypto',{value:{getRandomValues(a){a[0]=nextSeed++;return a}},configurable:true});
-let tracks=[],latestRecorder;
-function stream(){const track={stopped:false,stop(){this.stopped=true}};tracks.push(track);const list=[track];return {getTracks:()=>list,addTrack:t=>list.push(t)};}
-class Recorder{
- static isTypeSupported(t){return t.startsWith('video/webm')||t.startsWith('video/mp4')}
- constructor(stream,options){this.stream=stream;this.mimeType=options.mimeType;this.state='inactive';latestRecorder=this;}
- start(){this.state='recording'}pause(){this.state='paused'}resume(){this.state='recording'}
- stop(){this.state='inactive';this.ondataavailable?.({data:new Blob(['video-bytes'],{type:this.mimeType})});this.onstop?.();}
-}
-global.MediaRecorder=Recorder;els.stage.captureStream=fps=>{assert.equal(fps,30);return stream()};
-let timers=new Map(),timerId=0;global.setTimeout=f=>{timers.set(++timerId,f);return timerId};global.clearTimeout=id=>timers.delete(id);function flushTimers(){for(const [id,fn]of [...timers]){timers.delete(id);fn();}}
-let revoked=[];URL.createObjectURL=()=>`blob:test-${Math.random()}`;URL.revokeObjectURL=u=>revoked.push(u);
-els.home.value='Galatasaray';els.away.value='Fenerbahçe';els['home-color'].value='#e65d69';els['away-color'].value='#f0e9d8';els['predict-home'].value='1';els['predict-away'].value='1';
-vm.runInThisContext(scripts[2]);let now=0;function advance(n,hz=60){for(let i=0;i<n;i++){now+=1000/hz;callback(now)}}
-assert.equal(marbleDiagnostics.state,'menu');themes[1].fire('click');assert.equal(document.body.dataset.theme,'champions');themes[2].fire('click');assert.equal(document.body.dataset.theme,'europa');
-els.home.value='   ';els.setup.fire('submit');assert.equal(marbleDiagnostics.state,'menu');els.home.value='Galatasaray';els.home.fire('input');els.setup.fire('submit');assert.equal(marbleDiagnostics.state,'playing');advance(180);assert.equal(cachedGradients,1,'Background is cached, not regenerated per frame');assert(draws>100);
-els.pause.fire('click');const paused=marbleDiagnostics.time;advance(80);assert.equal(marbleDiagnostics.time,paused);els.resume.fire('click');advance(80);assert(marbleDiagnostics.time>paused);document.hidden=true;handlers.visibilitychange();assert.equal(marbleDiagnostics.state,'paused');document.hidden=false;els.resume.fire('click');
-function finishUI(hz=60){for(let i=0;i<hz*61&&marbleDiagnostics.state==='playing';i++)advance(1,hz);assert.equal(marbleDiagnostics.state,'finished');assert.equal(marbleDiagnostics.time,60);}
-finishUI();const originalEvents=marbleDiagnostics.events,originalSeed=marbleDiagnostics.seed;assert.equal(els.result.hidden,false);
-// Export uses the original seed and 60s timeline, not a new random outcome.
-els['export-replay'].fire('click');assert.equal(marbleDiagnostics.seed,originalSeed);assert(marbleDiagnostics.recording);advance(120);els.pause.fire('click');assert.equal(latestRecorder.state,'paused');advance(30);els.resume.fire('click');assert.equal(latestRecorder.state,'recording');finishUI();assert.deepEqual(marbleDiagnostics.events,originalEvents);assert(els.again.disabled);flushTimers();assert(!els.again.disabled);assert(!marbleDiagnostics.recording);assert(els.download.download.endsWith('.mp4'));assert.equal(els['video-actions'].hidden,false);assert(tracks.every(t=>t.stopped));
-// New matches revoke the previous video URL and don't accumulate recorder tracks.
-els.again.fire('click');assert(revoked.length===1);assert.notEqual(marbleDiagnostics.seed,originalSeed);assert.deepEqual(marbleDiagnostics.score,[0,0]);advance(60);els.exit.fire('click');assert(els['exit-dialog'].open);assert.equal(marbleDiagnostics.state,'paused');els.stay.fire('click');assert.equal(marbleDiagnostics.state,'playing');els.exit.fire('click');els.leave.fire('click');assert.equal(marbleDiagnostics.state,'menu');assert.equal(els.home.value,'Galatasaray');
-// Same result across 15, 30, and 144 Hz, including catch-up under low rendering FPS.
-function atRate(hz){nextSeed=901;els.setup.fire('submit');finishUI(hz);return marbleDiagnostics.events;}
-assert.deepEqual(atRate(15),atRate(144));assert.deepEqual(atRate(30),atRate(144));
-// Recorder selection, construction failure, runtime failure, cancellation and audio track cleanup.
-assert.equal(V.extension('video/webm;codecs=vp8'),'webm');assert.equal(V.extension('video/mp4'),'mp4');
-Recorder.isTypeSupported=t=>t.startsWith('video/webm');let exported,failed;const fake={captureStream:()=>stream()};let capture=V.create(fake,{complete:b=>exported=b,error:e=>failed=e});capture.stop();assert(exported.type.startsWith('video/webm'));assert(tracks.at(-1).stopped);
-capture=V.create(fake,{complete(){throw Error('Cancelled output must not be delivered')},error(){}});capture.cancel();assert(tracks.at(-1).stopped);
-capture=V.create(fake,{complete(){throw Error('Failed output must not be delivered')},error:e=>failed=e});latestRecorder.onerror();assert(failed);assert(tracks.at(-1).stopped);
-const audio={cloned:null,clone(){return this.cloned={stop(){this.stopped=true}}}};capture=V.create(fake,{complete(){},error(){}},audio);capture.stop();assert(audio.cloned.stopped);assert(!audio.stopped,'Source audio is retained; recorder owns its clone');
-global.MediaRecorder=class extends Recorder{constructor(){throw Error('Unsupported encoder')}};assert.throws(()=>V.create(fake,{}),/başlatılamadı/);assert(tracks.at(-1).stopped);global.MediaRecorder=undefined;assert.throws(()=>V.create(fake,{}),/desteklemiyor/);
-console.log('PASS: 60s/90min, faster physics, boundary/posts/goals, 80 matches, cached Canvas drawing, themes, validation, pause/background, deterministic video replay, 15/30/144Hz agreement, MP4/WebM negotiation, recording cleanup/failure, audio ownership and URL cleanup. Browser encoding/visual/device performance not tested.');
+assert(!E.validSave({...base(),board:[]}));assert(!E.validSave({...base(),coins:-1}));assert(!E.validSave({...base(),offers:['invented']}));
+console.log('PASS: 30 buildings, 12 projects, 8 events, preview/commit/undo, legality, all maps, 60 full games, economy, goals, reserve, saves and deterministic draws. Scores:',Math.min(...totals),'-',Math.max(...totals));
+// Exercise the actual separate UI script with a small semantic DOM stub.
+const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');assert(!/<script>/.test(html));for(const asset of ['styles.css','js/data.js','js/engine.js','js/app.js'])assert(fs.existsSync(path.join(__dirname,'..',asset)));
+class El{constructor(){this.children=[];this.style={setProperty(){}};this.dataset={};this.value='';this.hidden=false;this.disabled=false;this.classes=new Set();this.classList={add:x=>this.classes.add(x),toggle:(x,on)=>on?this.classes.add(x):this.classes.delete(x),remove:x=>this.classes.delete(x)};}append(...els){this.children.push(...els)}replaceChildren(...els){this.children=[...els]}setAttribute(){}focus(){}scrollIntoView(){}showModal(){this.open=true}close(){this.open=false}}
+const els={};for(const m of html.matchAll(/id="([^"]+)"/g))els[m[1]]=new El();els.mode.value='full';const q={'.hand-tools':new El(),'.hand-heading':new El()};global.document={body:new El(),getElementById:id=>{assert(els[id],id);return els[id]},createElement:()=>new El(),querySelector:s=>q[s]};global.window=global;global.addEventListener=()=>{};const storage={};global.localStorage={getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v};global.ParselData=D;global.ParselEngine=E;
+vm.runInThisContext(fs.readFileSync(path.join(__dirname,'../js/app.js'),'utf8'));els['new-game'].onclick();assert.equal(els.game.hidden,false);assert.equal(els.board.children.length,36);assert(els.cards.children.length>0);
+const uiState=JSON.parse(storage['son-parsel-game-v1']),slot=uiState.offers.findIndex(id=>D.byId[id].kind==='building'&&E.canUse(uiState,id));assert(slot>=0);const chosen=uiState.offers[slot],cell=E.placements(uiState,chosen)[0][0];els.cards.children[slot].onclick();els.board.children[cell].onclick();assert.equal(els.confirm.disabled,false);els.confirm.onclick();assert.equal(JSON.parse(storage['son-parsel-game-v1']).board[cell].id,chosen);els.undo.onclick();assert.equal(JSON.parse(storage['son-parsel-game-v1']).board[cell],null);
+
+els.pass.onclick();assert.equal(els.pending.hidden,false);els.undo.onclick();assert.equal(els.pending.hidden,true);els.pass.onclick();els['next-turn'].onclick();assert.equal(els.turn.textContent,2);els['game-menu'].onclick();assert.equal(els.menu.hidden,false);assert(!els.continue.hidden);els.continue.onclick();assert.equal(els.turn.textContent,2);
+for(let t=2;t<=30;t++){els.pass.onclick();els['next-turn'].onclick();}assert.equal(els.results.hidden,false);assert(Number.isFinite(Number(els['final-score'].textContent)));assert.equal(JSON.parse(storage['son-parsel-profile-v1']).games,1);els['goals-button'].onclick();assert(els.sheet.open);els['close-sheet'].onclick();els['catalog-game'].onclick();assert(els['sheet-content'].children.length);els.replay.onclick();assert.equal(els.turn.textContent,1);assert.equal(els.results.hidden,true);
+console.log('PASS: separate assets, menu/start, 36 tiles, pending/undo/advance, save/resume, 30-turn results, progression, dialogs and replay. Real browser/device layout not tested.');
