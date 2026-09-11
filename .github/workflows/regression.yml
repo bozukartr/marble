@@ -1,4 +1,4 @@
-name: Marble regression
+name: Son Parsel regression
 on:
   pull_request:
   push:
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 jobs:
-  physics-and-camera:
+  rules-and-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
